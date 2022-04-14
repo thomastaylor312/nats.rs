@@ -778,6 +778,23 @@ impl Subscriber {
             receiver,
         }
     }
+
+    /// Unsubscribes from subscription, draining all remaining messages.
+    ///
+    /// # Examples
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn unsubscribe() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut client = async_nats::connect("demo.nats.io").await?;
+    ///
+    /// let mut subscriber = client.subscribe("foo".into()).await?;
+    ///
+    ///  subscriber.unsubscribe();
+    /// # Ok(())
+    /// # }
+    pub fn unsubscribe(mut self) {
+        self.receiver.close();
+    }
 }
 
 impl Drop for Subscriber {
