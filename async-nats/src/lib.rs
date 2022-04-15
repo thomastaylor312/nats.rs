@@ -516,6 +516,9 @@ impl SubscriptionContext {
 
         sid
     }
+    pub fn remove(&mut self, sid: u64) -> bool {
+        self.subscription_map.remove(&sid).is_some()
+    }
 }
 
 /// A connector which facilitates communication from channels to a single shared connection.
@@ -574,7 +577,13 @@ impl Connector {
                                         payload,
                                     };
 
-                                    subscription.sender.send(message).await.unwrap();
+                                    // if the channel for subscription was dropped, remove the
+                                    // subscription from the map and unsubscribe.
+                                    if subscription.sender.send(message).await.is_err() {
+                                        context.remove(sid);
+                                        self.connection.write_op(ClientOp::Unsubscribe { sid }).await?;
+                                    }
+
                                 }
                             }
 
