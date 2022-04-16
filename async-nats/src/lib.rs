@@ -101,6 +101,7 @@
 
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
+use tokio::runtime::Handle;
 
 use std::collections::HashMap;
 use std::iter;
@@ -582,6 +583,7 @@ impl Connector {
                                     if subscription.sender.send(message).await.is_err() {
                                         context.remove(sid);
                                         self.connection.write_op(ClientOp::Unsubscribe { sid }).await?;
+                                        self.connection.stream.flush().await?;
                                     }
 
                                 }
@@ -693,7 +695,7 @@ impl Client {
             .await
             .unwrap();
 
-        Ok(Subscriber::new(sid, receiver))
+        Ok(Subscriber::new(sid, self.sender.clone(), receiver))
     }
 
     pub async fn flush(&mut self) -> Result<(), Error> {
@@ -778,12 +780,18 @@ pub struct Message {
 pub struct Subscriber {
     _sid: u64,
     receiver: mpsc::Receiver<Message>,
+    sender: mpsc::Sender<ClientOp>,
 }
 
 impl Subscriber {
-    fn new(sid: u64, receiver: mpsc::Receiver<Message>) -> Subscriber {
+    fn new(
+        sid: u64,
+        sender: mpsc::Sender<ClientOp>,
+        receiver: mpsc::Receiver<Message>,
+    ) -> Subscriber {
         Subscriber {
             _sid: sid,
+            sender,
             receiver,
         }
     }
@@ -801,8 +809,8 @@ impl Subscriber {
     ///  subscriber.unsubscribe();
     /// # Ok(())
     /// # }
-    pub fn unsubscribe(mut self) {
-        self.receiver.close();
+    pub fn unsubscribe(self) {
+        drop(self)
     }
 }
 
@@ -810,6 +818,10 @@ impl Drop for Subscriber {
     fn drop(&mut self) {
         // Can we get away with just closing, and then handling that on the sender side?
         self.receiver.close();
+        let handle = Handle::current();
+        let _entered = handle.enter();
+        futures::executor::block_on(self.sender.send(ClientOp::Unsubscribe { sid: self._sid }))
+            .ok();
     }
 }
 
