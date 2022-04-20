@@ -228,7 +228,7 @@ pub enum ClientOp {
         subject: String,
     },
     Unsubscribe {
-        sid: u64,
+        id: u64,
     },
     Ping,
     Pong,
@@ -463,10 +463,10 @@ impl Connection {
                 self.stream.flush().await?;
             }
 
-            ClientOp::Unsubscribe { sid } => {
+            ClientOp::Unsubscribe { id } => {
                 self.stream.write_all(b"UNSUB ").await?;
                 self.stream
-                    .write_all(format!("{}\r\n", sid).as_bytes())
+                    .write_all(format!("{}\r\n", id).as_bytes())
                     .await?;
             }
             ClientOp::Ping => {
@@ -494,14 +494,18 @@ struct Subscription {
 #[derive(Debug)]
 struct SubscriptionContext {
     next_sid: u64,
+    next_uid: u64,
     subscription_map: HashMap<u64, Subscription>,
+    uid_map: HashMap<u64, u64>,
 }
 
 impl SubscriptionContext {
     pub fn new() -> SubscriptionContext {
         SubscriptionContext {
             next_sid: 1,
+            next_uid: 1,
             subscription_map: HashMap::new(),
+            uid_map: HashMap::new(),
         }
     }
 
@@ -511,14 +515,26 @@ impl SubscriptionContext {
 
     pub fn insert(&mut self, subscription: Subscription) -> u64 {
         let sid = self.next_sid;
+        let uid = self.next_uid;
         self.next_sid += 1;
+        self.next_uid += 1;
 
         self.subscription_map.insert(sid, subscription);
+        self.uid_map.insert(uid, sid);
 
         sid
     }
     pub fn remove(&mut self, sid: u64) -> bool {
         self.subscription_map.remove(&sid).is_some()
+    }
+    pub fn get_sid(&self, uid: u64) -> Option<u64> {
+        self.uid_map.get(&uid).map(|sid| *sid)
+    }
+    pub fn remove_by_uid(&mut self, uid: u64) -> bool {
+        self.uid_map
+            .get(&uid)
+            .and_then(|sid| self.subscription_map.remove(sid))
+            .is_some()
     }
 }
 
@@ -551,6 +567,26 @@ impl Connector {
                 maybe_op = receiver.recv().fuse() => {
                     match maybe_op {
                         Some(op) => {
+                            // until we have separeted commands and op, let's just intercept
+                            // Unsubscibe and replace Subscription uid with sid
+                            if let ClientOp::Unsubscribe{id} = op {
+                                let mut  context = self.subscription_context.lock().await;
+                                let sid = {
+                                    let sid = context.get_sid(id);
+                                    match sid {
+                                        Some(sid) => sid,
+                                        None => continue
+                                    }
+                                };
+
+                                context.remove(sid);
+
+                                if let Err(err) = self.connection.write_op(ClientOp::Unsubscribe { id: sid }).await {
+                                    println!("Send failed with {:?}", err);
+                                }
+                                continue
+
+                            }
                             if let Err(err) = self.connection.write_op(op).await {
                                 println!("Send failed with {:?}", err);
                             }
@@ -582,7 +618,7 @@ impl Connector {
                                     // subscription from the map and unsubscribe.
                                     if subscription.sender.send(message).await.is_err() {
                                         context.remove(sid);
-                                        self.connection.write_op(ClientOp::Unsubscribe { sid }).await?;
+                                        self.connection.write_op(ClientOp::Unsubscribe { id: sid }).await?;
                                         self.connection.stream.flush().await?;
                                     }
 
@@ -778,19 +814,19 @@ pub struct Message {
 }
 
 pub struct Subscriber {
-    _sid: u64,
+    uid: u64,
     receiver: mpsc::Receiver<Message>,
     sender: mpsc::Sender<ClientOp>,
 }
 
 impl Subscriber {
     fn new(
-        sid: u64,
+        uid: u64,
         sender: mpsc::Sender<ClientOp>,
         receiver: mpsc::Receiver<Message>,
     ) -> Subscriber {
         Subscriber {
-            _sid: sid,
+            uid,
             sender,
             receiver,
         }
@@ -820,8 +856,7 @@ impl Drop for Subscriber {
         self.receiver.close();
         let handle = Handle::current();
         let _entered = handle.enter();
-        futures::executor::block_on(self.sender.send(ClientOp::Unsubscribe { sid: self._sid }))
-            .ok();
+        futures::executor::block_on(self.sender.send(ClientOp::Unsubscribe { id: self.uid })).ok();
     }
 }
 
