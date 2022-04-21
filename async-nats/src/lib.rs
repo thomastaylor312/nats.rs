@@ -101,7 +101,6 @@
 
 use futures_util::stream::Stream;
 use futures_util::StreamExt;
-use tokio::runtime::Handle;
 
 use std::collections::HashMap;
 use std::iter;
@@ -500,7 +499,7 @@ struct SubscriptionContext {
 }
 
 impl SubscriptionContext {
-    pub fn new() -> SubscriptionContext {
+    pub(crate) fn new() -> SubscriptionContext {
         SubscriptionContext {
             next_sid: 1,
             next_uid: 1,
@@ -509,11 +508,11 @@ impl SubscriptionContext {
         }
     }
 
-    pub fn get(&mut self, sid: u64) -> Option<&Subscription> {
+    pub(crate) fn get(&mut self, sid: u64) -> Option<&Subscription> {
         self.subscription_map.get(&sid)
     }
 
-    pub fn insert(&mut self, subscription: Subscription) -> u64 {
+    pub(crate) fn insert(&mut self, subscription: Subscription) -> u64 {
         let sid = self.next_sid;
         let uid = self.next_uid;
         self.next_sid += 1;
@@ -524,13 +523,15 @@ impl SubscriptionContext {
 
         sid
     }
-    pub fn remove(&mut self, sid: u64) -> bool {
+    pub(crate) fn remove(&mut self, sid: u64) -> bool {
         self.subscription_map.remove(&sid).is_some()
     }
-    pub fn get_sid(&self, uid: u64) -> Option<u64> {
-        self.uid_map.get(&uid).map(|sid| *sid)
+
+    pub(crate) fn get_sid(&self, uid: u64) -> Option<u64> {
+        self.uid_map.get(&uid).copied()
     }
-    pub fn remove_by_uid(&mut self, uid: u64) -> bool {
+
+    pub(crate) fn remove_by_uid(&mut self, uid: u64) -> bool {
         self.uid_map
             .get(&uid)
             .and_then(|sid| self.subscription_map.remove(sid))
