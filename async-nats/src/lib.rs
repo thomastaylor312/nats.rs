@@ -855,9 +855,9 @@ impl Drop for Subscriber {
         self.receiver.close();
         tokio::spawn({
             let sender = self.sender.clone();
-            let uid = self.uid;
+            let id = self.uid;
             async move {
-                sender.send(ClientOp::Unsubscribe { id: uid }).await.ok();
+                sender.send(ClientOp::Unsubscribe { id }).await.ok();
             }
         });
     }
