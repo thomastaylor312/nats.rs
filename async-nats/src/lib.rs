@@ -852,11 +852,14 @@ impl Subscriber {
 
 impl Drop for Subscriber {
     fn drop(&mut self) {
-        // Can we get away with just closing, and then handling that on the sender side?
         self.receiver.close();
-        let handle = Handle::current();
-        let _entered = handle.enter();
-        futures::executor::block_on(self.sender.send(ClientOp::Unsubscribe { id: self.uid })).ok();
+        tokio::spawn({
+            let sender = self.sender.clone();
+            let uid = self.uid;
+            async move {
+                sender.send(ClientOp::Unsubscribe { id: uid }).await.ok();
+            }
+        });
     }
 }
 
