@@ -499,7 +499,7 @@ struct SubscriptionContext {
 }
 
 impl SubscriptionContext {
-    pub(crate) fn new() -> SubscriptionContext {
+    fn new() -> SubscriptionContext {
         SubscriptionContext {
             next_sid: 1,
             next_uid: 1,
@@ -508,11 +508,11 @@ impl SubscriptionContext {
         }
     }
 
-    pub(crate) fn get(&mut self, sid: u64) -> Option<&Subscription> {
+    fn get(&mut self, sid: u64) -> Option<&Subscription> {
         self.subscription_map.get(&sid)
     }
 
-    pub(crate) fn insert(&mut self, subscription: Subscription) -> u64 {
+    fn insert(&mut self, subscription: Subscription) -> u64 {
         let sid = self.next_sid;
         let uid = self.next_uid;
         self.next_sid += 1;
@@ -523,15 +523,15 @@ impl SubscriptionContext {
 
         sid
     }
-    pub(crate) fn remove(&mut self, sid: u64) -> bool {
+    fn remove(&mut self, sid: u64) -> bool {
         self.subscription_map.remove(&sid).is_some()
     }
 
-    pub(crate) fn get_sid(&self, uid: u64) -> Option<u64> {
+    fn get_sid(&self, uid: u64) -> Option<u64> {
         self.uid_map.get(&uid).copied()
     }
 
-    pub(crate) fn remove_by_uid(&mut self, uid: u64) -> bool {
+    fn remove_by_uid(&mut self, uid: u64) -> bool {
         self.uid_map
             .get(&uid)
             .and_then(|sid| self.subscription_map.remove(sid))
