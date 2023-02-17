@@ -12,14 +12,16 @@
 // limitations under the License.
 
 use std::fmt::Display;
+use std::pin::Pin;
 use std::str::{self, FromStr};
 
 use subslice::SubsliceExt;
-use tokio::io::{AsyncRead, AsyncWriteExt};
-use tokio::io::{AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter, DuplexStream};
 
 use bytes::{Buf, BytesMut};
 use tokio::io;
+use tokio::net::TcpStream;
+use tokio_rustls::client::TlsStream;
 
 use crate::header::{HeaderMap, HeaderName};
 use crate::status::StatusCode;
@@ -50,8 +52,69 @@ impl Display for State {
 
 /// A framed connection
 pub(crate) struct Connection {
-    pub(crate) stream: Box<dyn AsyncReadWrite>,
+    pub(crate) stream: PickYourConn,
     pub(crate) buffer: BytesMut,
+}
+
+pub(crate) enum PickYourConn {
+    Tcp(BufWriter<TcpStream>),
+    Tls(TlsStream<BufWriter<TcpStream>>),
+    #[allow(unused)]
+    Memory(DuplexStream),
+}
+
+impl AsyncRead for PickYourConn {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let data = Pin::into_inner(self);
+        match data {
+            PickYourConn::Tcp(w) => Pin::new(w).poll_read(cx, buf),
+            PickYourConn::Tls(w) => Pin::new(w).poll_read(cx, buf),
+            PickYourConn::Memory(w) => Pin::new(w).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for PickYourConn {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let data = Pin::into_inner(self);
+        match data {
+            PickYourConn::Tcp(w) => Pin::new(w).poll_write(cx, buf),
+            PickYourConn::Tls(w) => Pin::new(w).poll_write(cx, buf),
+            PickYourConn::Memory(w) => Pin::new(w).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let data = Pin::into_inner(self);
+        match data {
+            PickYourConn::Tcp(w) => Pin::new(w).poll_flush(cx),
+            PickYourConn::Tls(w) => Pin::new(w).poll_flush(cx),
+            PickYourConn::Memory(w) => Pin::new(w).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let data = Pin::into_inner(self);
+        match data {
+            PickYourConn::Tcp(w) => Pin::new(w).poll_shutdown(cx),
+            PickYourConn::Tls(w) => Pin::new(w).poll_shutdown(cx),
+            PickYourConn::Memory(w) => Pin::new(w).poll_shutdown(cx),
+        }
+    }
 }
 
 /// Internal representation of the connection.
@@ -438,7 +501,7 @@ impl Connection {
 
 #[cfg(test)]
 mod read_op {
-    use super::Connection;
+    use super::{Connection, PickYourConn};
     use crate::{HeaderMap, ServerError, ServerInfo, ServerOp, StatusCode};
     use bytes::BytesMut;
     use tokio::io::{self, AsyncWriteExt};
@@ -447,7 +510,7 @@ mod read_op {
     async fn ok() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -460,7 +523,7 @@ mod read_op {
     async fn ping() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -473,7 +536,7 @@ mod read_op {
     async fn pong() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -486,7 +549,7 @@ mod read_op {
     async fn info() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -516,7 +579,7 @@ mod read_op {
     async fn error() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -541,7 +604,7 @@ mod read_op {
     async fn message() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -691,7 +754,7 @@ mod read_op {
     async fn unknown() {
         let (stream, mut server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -743,7 +806,7 @@ mod read_op {
 
 #[cfg(test)]
 mod write_op {
-    use super::Connection;
+    use super::{Connection, PickYourConn};
     use crate::{ClientOp, ConnectInfo, HeaderMap, Protocol};
     use bytes::BytesMut;
     use tokio::io::{self, AsyncBufReadExt, BufReader};
@@ -752,7 +815,7 @@ mod write_op {
     async fn publish() {
         let (stream, server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -818,7 +881,7 @@ mod write_op {
     async fn subscribe() {
         let (stream, server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -856,7 +919,7 @@ mod write_op {
     async fn unsubscribe() {
         let (stream, server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -889,7 +952,7 @@ mod write_op {
     async fn ping() {
         let (stream, server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -908,7 +971,7 @@ mod write_op {
     async fn pong() {
         let (stream, server) = io::duplex(128);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 
@@ -927,7 +990,7 @@ mod write_op {
     async fn connect() {
         let (stream, server) = io::duplex(1024);
         let mut connection = Connection {
-            stream: Box::new(stream),
+            stream: PickYourConn::Memory(stream),
             buffer: BytesMut::new(),
         };
 

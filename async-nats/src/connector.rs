@@ -12,6 +12,7 @@
 // limitations under the License.
 
 use crate::connection::Connection;
+use crate::connection::PickYourConn;
 use crate::connection::State;
 use crate::tls;
 use crate::Authorization;
@@ -261,7 +262,7 @@ impl Connector {
         tcp_stream.set_nodelay(true)?;
 
         let mut connection = Connection {
-            stream: Box::new(BufWriter::new(tcp_stream)),
+            stream: PickYourConn::Tcp(BufWriter::new(tcp_stream)),
             buffer: BytesMut::new(),
         };
 
@@ -308,9 +309,21 @@ impl Connector {
                 ));
             };
 
-            connection = Connection {
-                stream: Box::new(tls_connector.connect(domain, connection.stream).await?),
-                buffer: BytesMut::new(),
+            connection = match connection.stream {
+                PickYourConn::Tcp(stream) => Connection {
+                    stream: PickYourConn::Tls(tls_connector.connect(domain, stream).await?),
+                    buffer: connection.buffer,
+                },
+                // This should never happen as we control what is set, but just being careful
+                PickYourConn::Tls(stream) => Connection {
+                    stream: PickYourConn::Tls(stream),
+                    buffer: connection.buffer,
+                },
+                // This should never happen as we control what is set, but just being careful
+                PickYourConn::Memory(stream) => Connection {
+                    stream: PickYourConn::Memory(stream),
+                    buffer: connection.buffer,
+                },
             };
         };
 
